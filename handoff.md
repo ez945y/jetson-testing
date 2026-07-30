@@ -100,6 +100,7 @@ v4l2src (webcam) → nvvideoconvert → capsfilter(RGBA) → appsink
 | DEP-5 | **GStreamer nv 外掛註冊** | 🟡 | 容器內 `nvvideoconvert`/`nvstreammux`/`nvinfer` 需在 `GST_PLUGIN_PATH` 註冊。DeepStream install.sh 會處理，但若 base image 換過可能漏。preflight 用 `gst-inspect-1.0` 逐一檢查。 |
 | DEP-6 | **webcam 裝置直通** | 🟡 | 容器要 `--device /dev/video0`。`jetson-containers run` 預設不一定帶。`run.sh` 已顯式加上 `--device` 與 X11 掛載。 |
 | DEP-7 | **顯示 / X11** | 🟡 | 無螢幕或 headless 時 `nveglglessink`/imshow 會爆。app 預設 **headless 友善**：無 DISPLAY 就只印文字，不開視窗。 |
+| DEP-8 | **Docker / NVIDIA container runtime 前置** | 🟢(設計已處理) | 正常 JetPack 7.1 **已預裝** Docker + nvidia runtime；jetson-containers 的 `install.sh` **不裝 Docker**。`build.sh` 步驟 0 做 idempotent 檢查：缺 Docker 才用官方 script 裝（`get.docker.com`，支援 arm64），缺 nvidia runtime **只警告不強裝**（Jetson 的 runtime 來源與 x86 的 `nvidia-container-toolkit` 不同，亂裝會弄壞 JetPack）。可用 `SKIP_DOCKER_SETUP=1` 跳過整段。 |
 
 **追蹤方式**：每個 DEP 在實機驗過就把狀態改成 🟢 並補一行「實機結果」。這份表就是依賴完整性的最終記分板。
 
@@ -116,6 +117,7 @@ v4l2src (webcam) → nvvideoconvert → capsfilter(RGBA) → appsink
 - **T3 架構收斂**：原本想做 DeepStream 原生 nvinfer 全硬體 pipeline；評估「無實機 + 只為測依賴」後**否決**，改 appsink+PyTorch（D1）。決策從「秀肌肉」轉為「最小可驗證」。
 - **T4 韌性優先**：因無法實機除錯，決定所有依賴匯入都包 try/except 且**分層降級**，寧可少做功能也要能跑到「告訴你哪裡缺」。
 - **T5 開發機煙霧測試（2026-07-30）**：在 macOS 開發機（Python 3.12，無任何 Jetson 依賴）跑 `preflight.py`：**不崩、跑到底、印出記分板、exit 1**，正確標示 torch/pyds/deepstream/gst/webcam 全缺。證明「缺料變可讀報告」的設計成立。`app.py` 通過 `py_compile`。實機只是把這些 FAIL 逐一翻成 PASS 的過程。
+- **T7 Docker 前置的取捨（新增 build.sh 步驟 0）**：被問「要不要自己裝 container」。查證 —— **JetPack 預裝 Docker + nvidia runtime，jetson-containers `install.sh` 不裝 Docker**，所以標準情況不用。但仍加了 idempotent 安裝：**缺 Docker 才裝**。關鍵決策是 **nvidia runtime「只警告不強裝」**——因為 Jetson 的 runtime 來源與 x86 `nvidia-container-toolkit` 不同，腳本亂裝會弄壞 JetPack，寧可停下來讓人確認。體現原則：**破壞性 / 系統級操作要保守，能 idempotent 就 idempotent，沒把握就不要自動化。**
 - **T6 選版機制查證（修正 DEP-1 的認知）**：原本 DEP-1 寫「未見 r38 條目、可能沿用 JP6.2 URL」。實際讀 `config.py` 後**修正為更精確也更嚴重的結論**：不是「找不到→報錯」，而是 `>=` 級聯**沒有版本上限**，r38 會**靜默命中最頂端的 JP6.2 DS8.0.0 分支**，裝成「CUDA 12.6 的 DeepStream 落在 CUDA 13 環境」的假成功。決策從「擔心它抓不到」轉為「**擔心它抓到但抓錯，且看起來像對的**」——這反而強化了 `preflight.py`（用 `import pyds`/`deepstream-app --version` 驗真）的必要性。
 
 （實機那端若再有轉折，請接續往下記。）
