@@ -17,14 +17,14 @@
 git clone <your-repo-url> jetson-testing
 cd jetson-testing
 
-# 2) 安裝 jetson-containers 工具本身（不含 Docker；Docker 由 build.sh 檢查）
-git clone https://github.com/dusty-nv/jetson-containers
-bash jetson-containers/install.sh
-
-# 3) 讓 docker 群組生效 (裝完 docker 後; 之後都不要用 sudo 跑 jetson-containers/docker)
+# 2) 一次性: 裝 Docker(官方, 含 buildx) + NVIDIA runtime, 然後讓 docker 群組生效
+./setup-host.sh
 newgrp docker
 
-# 4) 建置組合容器：以現成 deepstream 為 --base, 疊上 pytorch (幾分鐘, 不從源碼編)
+# 3) 登入 NGC (拉 NVIDIA 官方 DeepStream 容器用; 免費帳號, API key 到 ngc.nvidia.com 申請)
+docker login nvcr.io    # username 固定填 $oauthtoken, password 填 NGC API key
+
+# 4) 做 image (一次): 官方 DeepStream 7.1 + pip 疊 jetson 預建 torch wheel, 零編譯
 ./build.sh
 
 # 5) 先驗依賴（= 依賴完整性驗收），再跑應用
@@ -32,13 +32,15 @@ newgrp docker
 ./run.sh app
 ```
 
-> **不要用 `sudo` 跑 `build.sh` / `run.sh`**：`jetson-containers`/`docker` 用 sudo 會把 repo 弄成 root 擁有、之後非 sudo 執行全卡權限（見 handoff T11）。裝完 docker 用 `newgrp docker` 讓群組生效即可。
+> **不要用 `sudo` 跑 `build.sh` / `run.sh`**：sudo 會把目錄弄成 root 擁有、之後非 sudo 執行全卡權限（見 handoff T11）。`setup-host.sh` 裝完後用 `newgrp docker` 讓群組生效即可。
 >
-> **融合方式**：`build.sh` 用薄 Dockerfile `FROM <現成 deepstream>` + `pip install torch torchvision`（預建 wheel）。**不用** `jetson-containers build --base`——實測它會重建 CUDA、`exit 100`、耗 54 分（見 handoff DEP-11/T12）。
+> **這一顆 image 是什麼**：沒有任何官方現成 image 同時含 DeepStream + PyTorch，所以 `build.sh` 用薄 [`Dockerfile`](Dockerfile) 自己合一顆——`FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch`（**官方對 JP6.2 / L4T 36.4–36.5 的 release**，CUDA 12.6 與 host 對齊）+ `pip install torch torchvision`（jetson-ai-lab 的 **cu126 預建 wheel**）。全程零編譯，image 做一次永久重用。
 >
-> **基底切換**：預設 `dustynv/deepstream:r36.2.0`（已實測、免登入、內建 jetson pip 索引）。要用最新、與 host cu126 對齊的 NVIDIA 官方 DeepStream 7.1（需先 `docker login nvcr.io`，且要自帶 wheel 索引）：
+> **不用 `jetson-containers build`**：實測它必從源碼重建依賴樹（含 CUDA）——r36.5 無預建時整條編數小時、且在 cuda 階段 `exit 100`（見 handoff DEP-11/T12）。
+>
+> **免登入備援**：dustynv 的 r36.2 預建（CUDA 12.2 較舊，已實測 pyds/gstreamer 在 r36.5 host 全過）：
 > ```bash
-> DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch TORCH_INDEX=https://pypi.jetson-ai-lab.dev/jp6/cu126 ./build.sh
+> DEEPSTREAM_BASE=dustynv/deepstream:r36.2.0 TORCH_INDEX= ./build.sh
 > ```
 
 ---
@@ -48,8 +50,10 @@ newgrp docker
 | 檔案 | 作用 |
 |------|------|
 | [`handoff.md`](handoff.md) | ⭐ 決策日誌 + 依賴問題追蹤 + 驗收標準（先看這個）|
-| [`build.sh`](build.sh) | 檢查 Docker → `jetson-containers build deepstream pytorch torchvision` 組合容器 |
-| [`run.sh`](run.sh) | 在容器內跑 `preflight` / `app` / `shell`，自動 `autotag` + webcam 直通 |
+| [`setup-host.sh`](setup-host.sh) | 一次性：host 裝官方 Docker（含 buildx）+ NVIDIA container runtime |
+| [`Dockerfile`](Dockerfile) | 薄層融合：`FROM` 官方 DeepStream 7.1 + pip 疊預建 torch wheel |
+| [`build.sh`](build.sh) | `docker build` 做出 `ds-torch-webcam` image（一次，永久重用）|
+| [`run.sh`](run.sh) | `docker run` 跑 `preflight` / `app` / `shell`，webcam 直通 |
 | [`app/preflight.py`](app/preflight.py) | 依賴健檢 = 依賴完整性驗收（AC-1），永不 crash，最後給記分板 |
 | [`app/app.py`](app/app.py) | 小應用：webcam→GStreamer/nv→appsink→PyTorch 分類（AC-2），headless 友善 |
 
