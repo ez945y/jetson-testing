@@ -41,9 +41,11 @@ ensure_docker() {
   apt_update_once
   sudo apt-get install -y docker.io
   sudo systemctl enable --now docker || true
-  sudo usermod -aG docker "$USER" || true
+  # sudo 底下 $USER 會是 root; 用 ${SUDO_USER:-$USER} 抓「真正的你」, 把你(而非root)加進 docker 群組。
+  TARGET_USER="${SUDO_USER:-$USER}"
+  sudo usermod -aG docker "${TARGET_USER}" || true
   echo "[build] Docker 安裝完成: $(docker --version 2>/dev/null || echo '需重登入生效')"
-  echo "[build] 若稍後 docker 出現 permission denied, 請登出再登入 (docker 群組生效)。"
+  echo "[build] 已把 ${TARGET_USER} 加進 docker 群組。若非 sudo 執行, 之後遇 permission denied 請 'newgrp docker' 或重登入。"
 }
 
 ensure_nvidia_runtime() {
