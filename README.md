@@ -70,6 +70,70 @@ VIDEO_DEVICE=/dev/video2 RUN_SECONDS=0 ./run.sh app
 
 ---
 
+## 遠端連線（SSH）
+
+在沒有螢幕、或想從電腦操作 Jetson 時：
+
+```bash
+# 在 Jetson 上：查內網 IP
+hostname -I
+
+# 在 Jetson 上：確認 SSH server（base 映像可能沒裝）
+sudo apt-get install -y openssh-server && sudo systemctl enable --now ssh
+```
+
+從你的電腦連（帳號 `mike`、主機名 `ubuntu`）：
+```bash
+ssh mike@<jetson-ip>
+```
+主機名是 `ubuntu` 且 mDNS 有開時，可不記 IP：
+```bash
+ssh mike@ubuntu.local
+```
+免密碼（選用，在你電腦上跑一次）：
+```bash
+ssh-copy-id mike@<jetson-ip>
+```
+
+---
+
+## 疑難排解
+
+### `build.sh` 失敗、結尾是 `returned non-zero exit status 125`
+`exit 125` 是 **Docker 自己起不動那個 build step**，通常掛在最基礎的 `build-essential` 階段 —— 代表**還沒碰到 deepstream/pytorch，是 `docker buildx` 層就失敗**，跟套件依賴無關。詳見 `handoff.md` DEP-10。
+
+先看**真正的錯誤訊息**（traceback 只是外層），在 jetson-containers 的 log 檔：
+```bash
+tail -n 30 jetson-containers/logs/*/build/*build-essential.txt
+```
+
+再檢查兩個最常見前提：
+```bash
+docker buildx version          # 報錯 → buildx 沒裝 (Ubuntu 的 docker.io 常缺)
+```
+```bash
+cat /etc/docker/daemon.json    # 應含 "default-runtime": "nvidia"
+```
+
+**修法（依上面結果擇一）：**
+
+- **buildx 缺** → 用 Docker 官方 apt 源補 buildx（`docker.io` 不帶）：
+  ```bash
+  sudo apt-get install -y ca-certificates gnupg
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" | sudo tee /etc/apt/sources.list.d/docker.list
+  sudo apt-get update && sudo apt-get install -y docker-buildx-plugin
+  ```
+- **`default-runtime` 不是 nvidia** → 設定後重啟 docker：
+  ```bash
+  sudo nvidia-ctk runtime configure --runtime=docker --set-as-default && sudo systemctl restart docker
+  ```
+
+改完重跑 `./build.sh`（idempotent，會沿用已裝好的部分）。
+
+---
+
 ## 為什麼選 JetPack 6.2（而非 7.1）
 
 JP6.2 是 **L4T r36.4.3**，正好是 jetson-containers `deepstream/config.py` 明確對應 DeepStream 8.0.0 的那一筆——
