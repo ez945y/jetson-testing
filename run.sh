@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# run.sh — 在 jetson-containers 容器內跑 preflight / app / shell。
+# run.sh — 直接用 docker run 跑組合好的 image (preflight / app / shell)。
 # 用法: ./run.sh [preflight|app|shell]
+#
+# 為何用 docker run 而非 jetson-containers run + autotag:
+#   我們的 image 名稱固定 (build.sh --name=ds-torch-webcam), 且 autotag/jetson-containers run
+#   之前在 sudo 汙染下踩到權限問題 + 會嘗試重建。改為明確 docker run, 可預期、不再繞路。
+#   !! 不要用 sudo 跑 !! —— sudo 會把 jetson-containers/ 目錄弄成 root 擁有 (見 handoff T11)。
+#   先確保在 docker 群組: 裝完 docker 後執行過 `newgrp docker` 或重新登入。
 set -euo pipefail
 
 MODE="${1:-preflight}"
@@ -8,33 +14,38 @@ CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"
 VIDEO_DEVICE="${VIDEO_DEVICE:-/dev/video0}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if ! command -v jetson-containers >/dev/null 2>&1; then
-  echo "[run] 找不到 jetson-containers。先跑 ./build.sh 的前置安裝步驟。" >&2
-  exit 1
-fi
+# build.sh --name 產出的實際 tag 形如 ds-torch-webcam:r36.5.x-...; 抓第一個符合的。
+IMAGE="$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^${CONTAINER_NAME}:" | head -1 || true)"
+[ -z "${IMAGE}" ] && IMAGE="${CONTAINER_NAME}"
 
-# 決策 D3: 用 autotag 依實機 L4T 挑對的 image; 允許 CONTAINER_NAME 覆寫。
-IMAGE="$(autotag "${CONTAINER_NAME}" 2>/dev/null || echo "${CONTAINER_NAME}")"
-echo "[run] image = ${IMAGE}"
-
-# DEP-6/DEP-7: 顯式直通 webcam 與 X11 (headless 也能跑, app 會自動判斷 DISPLAY)。
-EXTRA_ARGS=(
-  --device "${VIDEO_DEVICE}:${VIDEO_DEVICE}"
+RUN_ARGS=(
+  --runtime nvidia
+  --network host
+  -it --rm
+  -v "${HERE}/app:/app"
   -e "VIDEO_DEVICE=${VIDEO_DEVICE}"
   -e "INFER_EVERY=${INFER_EVERY:-15}"
   -e "RUN_SECONDS=${RUN_SECONDS:-60}"
-  -v "${HERE}/app:/workspace/app"
 )
+
+# webcam 直通 (host 上存在才加, 否則 docker run 會直接報錯)
+if [ -e "${VIDEO_DEVICE}" ]; then
+  RUN_ARGS+=(--device "${VIDEO_DEVICE}")
+else
+  echo "[run][WARN] ${VIDEO_DEVICE} 不存在, 不直通 webcam (preflight 的 webcam 檢查會 FAIL)。" >&2
+fi
+
+# X11 (有 DISPLAY 才加; headless 時 app 會自動只印文字)
 if [ -n "${DISPLAY:-}" ]; then
-  EXTRA_ARGS+=(-e "DISPLAY=${DISPLAY}" -v /tmp/.X11-unix:/tmp/.X11-unix)
+  RUN_ARGS+=(-e "DISPLAY=${DISPLAY}" -v /tmp/.X11-unix:/tmp/.X11-unix)
 fi
 
 case "${MODE}" in
-  preflight) CMD="python3 /workspace/app/preflight.py" ;;
-  app)       CMD="python3 /workspace/app/app.py" ;;
-  shell)     CMD="bash" ;;
+  preflight) CMD=(python3 /app/preflight.py) ;;
+  app)       CMD=(python3 /app/app.py) ;;
+  shell)     CMD=(bash) ;;
   *) echo "用法: $0 [preflight|app|shell]" >&2; exit 2 ;;
 esac
 
-echo "[run] mode=${MODE} device=${VIDEO_DEVICE}"
-exec jetson-containers run "${EXTRA_ARGS[@]}" "${IMAGE}" ${CMD}
+echo "[run] image=${IMAGE} mode=${MODE} device=${VIDEO_DEVICE}"
+exec docker run "${RUN_ARGS[@]}" "${IMAGE}" "${CMD[@]}"

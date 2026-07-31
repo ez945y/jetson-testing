@@ -21,15 +21,23 @@ cd jetson-testing
 git clone https://github.com/dusty-nv/jetson-containers
 bash jetson-containers/install.sh
 
-# 3) 建置組合容器（DeepStream + PyTorch + torchvision）
+# 3) 讓 docker 群組生效 (裝完 docker 後; 之後都不要用 sudo 跑 jetson-containers/docker)
+newgrp docker
+
+# 4) 建置組合容器：以現成 deepstream 為 --base, 疊上 pytorch (幾分鐘, 不從源碼編)
 ./build.sh
 
-# 4) 先驗依賴（= 依賴完整性驗收），再跑應用
+# 5) 先驗依賴（= 依賴完整性驗收），再跑應用
 ./run.sh preflight
 ./run.sh app
 ```
 
-> `build.sh` 步驟 0 會**冪等**檢查 Docker：JetPack 6.2 通常已內建就直接跳過，只有精簡映像缺 Docker 才會裝（需 sudo）。
+> **不要用 `sudo` 跑 `build.sh` / `run.sh`**：`jetson-containers`/`docker` 用 sudo 會把 repo 弄成 root 擁有、之後非 sudo 執行全卡權限（見 handoff T11）。裝完 docker 用 `newgrp docker` 讓群組生效即可。
+>
+> **基底切換**：預設用 `dustynv/deepstream:r36.2.0`（已實測、免登入）。要用最新、與 host CUDA 12.6 原生對齊的 NVIDIA 官方 DeepStream 7.1（需先 `docker login nvcr.io`）：
+> ```bash
+> DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch CUDA_VERSION=12.6 ./build.sh
+> ```
 
 ---
 
