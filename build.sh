@@ -8,23 +8,42 @@ CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"
 # ---------------------------------------------------------------------------
 # 步驟 0: 確認容器執行環境 (Docker + NVIDIA runtime)
 #
-# 註: 正常燒錄的 JetPack 7.1 「已預裝」Docker 與 nvidia runtime, 此段通常整段跳過。
-#     只有精簡 / 自訂 / 被移除的映像才會真的去裝。設計為 idempotent: 有就跳過, 不覆蓋。
-#     跳過此段: SKIP_DOCKER_SETUP=1 ./build.sh
+# 目標平台 JP6.2 = Ubuntu 22.04。**JP6.2 base 映像常常連 curl 都沒有**,
+# 所以這裡一律走 apt (base 一定有 apt), 不依賴 curl / get.docker.com。見 handoff DEP-8/DEP-9。
+# 設計為 idempotent: 有就跳過, 不覆蓋 JetPack 既有的。跳過整段: SKIP_DOCKER_SETUP=1 ./build.sh
 # ---------------------------------------------------------------------------
+APT_UPDATED=0
+apt_update_once() {  # 只 apt-get update 一次, 避免重複
+  [ "${APT_UPDATED}" = "1" ] && return
+  sudo apt-get update
+  APT_UPDATED=1
+}
+
+ensure_base_tools() {
+  # base 映像常缺 curl (使用者已回報)。git 通常有; 兩者缺才補。
+  local miss=()
+  command -v curl >/dev/null 2>&1 || miss+=(curl)
+  command -v git  >/dev/null 2>&1 || miss+=(git)
+  if [ "${#miss[@]}" -gt 0 ]; then
+    echo "[build] 補基本工具 (base 映像缺): ${miss[*]}  (需 sudo)"
+    apt_update_once
+    sudo apt-get install -y "${miss[@]}"
+  fi
+}
+
 ensure_docker() {
   if command -v docker >/dev/null 2>&1; then
     echo "[build] Docker 已存在: $(docker --version)"
     return
   fi
-  echo "[build] 找不到 Docker (JetPack 通常預裝, 此機可能是精簡映像)。開始安裝..."
+  echo "[build] 找不到 Docker。以 apt 安裝 docker.io (base 無 curl, 不用 get.docker.com)。"
   echo "[build] ↳ 需要 sudo 密碼; 這步會改動系統。"
-  # Ubuntu 24.04 / arm64: 用 Docker 官方 convenience script (支援 Jetson arm64)。
-  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-  sudo sh /tmp/get-docker.sh
-  # 讓目前使用者免 sudo 用 docker (需登出再登入才生效)。
+  apt_update_once
+  sudo apt-get install -y docker.io
+  sudo systemctl enable --now docker || true
   sudo usermod -aG docker "$USER" || true
-  echo "[build] Docker 安裝完成。若稍後 docker 出現 permission denied, 請登出再登入。"
+  echo "[build] Docker 安裝完成: $(docker --version 2>/dev/null || echo '需重登入生效')"
+  echo "[build] 若稍後 docker 出現 permission denied, 請登出再登入 (docker 群組生效)。"
 }
 
 ensure_nvidia_runtime() {
@@ -33,18 +52,25 @@ ensure_nvidia_runtime() {
     echo "[build] NVIDIA container runtime 已就緒。"
     return
   fi
-  # 決策: 這裡「只警告不強裝」。Jetson 的 nvidia runtime 應由 JetPack 提供
-  #       (apt 套件 nvidia-container / L4T repo), 與 x86 的 nvidia-container-toolkit
-  #       來源不同; 由腳本亂裝可能裝錯版本、弄壞 JetPack。故留給人工確認。
-  echo "[build][WARN] 未偵測到 NVIDIA container runtime。GPU / DeepStream 會無法運作。" >&2
-  echo "[build][WARN] 正常 JetPack 應已內建。若確實缺, 用 JetPack 的來源補裝, 例如:" >&2
-  echo "              sudo apt-get update && sudo apt-get install -y nvidia-container" >&2
-  echo "              sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker" >&2
-  echo "[build][WARN] (刻意不自動安裝, 避免在 Jetson 上裝到 x86 版本; 見 handoff DEP-8)" >&2
+  # 決策更新 (T9): 已鎖定 JP6.2 + 本機是 JetPack 裝置(L4T apt repo 已預配),
+  # 此時正確套件明確就是 nvidia-container-toolkit, 不再有「裝到 x86 版」的歧義,
+  # 故從「只警告」改為「apt 嘗試安裝, 失敗才警告」。
+  echo "[build] 未偵測到 NVIDIA runtime。JP6.2 以 apt 安裝 nvidia-container-toolkit (L4T repo)。"
+  echo "[build] ↳ 需要 sudo 密碼。"
+  apt_update_once
+  if sudo apt-get install -y nvidia-container-toolkit; then
+    sudo nvidia-ctk runtime configure --runtime=docker || true
+    sudo systemctl restart docker || true
+    echo "[build] nvidia runtime 設定完成。"
+  else
+    echo "[build][WARN] apt 裝不到 nvidia-container-toolkit — L4T apt 來源可能沒配好。" >&2
+    echo "[build][WARN] 確認 /etc/apt/sources.list.d/ 有 nvidia L4T repo 後重跑; 見 handoff DEP-8。" >&2
+  fi
 }
 
 if [ "${SKIP_DOCKER_SETUP:-0}" != "1" ]; then
-  echo "[build] 步驟 0/1: 確認 Docker + NVIDIA runtime"
+  echo "[build] 步驟 0/1: 確認基本工具 + Docker + NVIDIA runtime"
+  ensure_base_tools
   ensure_docker
   ensure_nvidia_runtime
 fi
