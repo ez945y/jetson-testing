@@ -115,22 +115,11 @@ docker buildx version          # 報錯 → buildx 沒裝 (Ubuntu 的 docker.io 
 cat /etc/docker/daemon.json    # 應含 "default-runtime": "nvidia"
 ```
 
-**修法（依上面結果擇一）：**
-
-- **buildx 缺** → 用 Docker 官方 apt 源補 buildx（`docker.io` 不帶）：
-  ```bash
-  sudo apt-get install -y ca-certificates gnupg
-  sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" | sudo tee /etc/apt/sources.list.d/docker.list
-  sudo apt-get update && sudo apt-get install -y docker-buildx-plugin
-  ```
-- **`default-runtime` 不是 nvidia** → 設定後重啟 docker：
-  ```bash
-  sudo nvidia-ctk runtime configure --runtime=docker --set-as-default && sudo systemctl restart docker
-  ```
-
-改完重跑 `./build.sh`（idempotent，會沿用已裝好的部分）。
+**修法：`build.sh` 步驟 0 現在已用 Docker 官方源裝 `docker-ce` 全套（含 buildx）並設好 `default-runtime: nvidia`，正常重跑一次就好：**
+```bash
+sudo ./build.sh
+```
+> 步驟 0 會移除 Ubuntu 的 `docker.io`（buildx 缺失的根因，見 `handoff.md` DEP-10/T10），改裝官方 `docker-ce`。全程 `set -e`，任一步失敗即停、不降級。
 
 ---
 

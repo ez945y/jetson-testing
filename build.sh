@@ -6,75 +6,55 @@ set -euo pipefail
 CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"
 
 # ---------------------------------------------------------------------------
-# 步驟 0: 確認容器執行環境 (Docker + NVIDIA runtime)
+# 步驟 0: 安裝正規 Docker (官方源, 含 buildx) + NVIDIA container runtime
 #
-# 目標平台 JP6.2 = Ubuntu 22.04。**JP6.2 base 映像常常連 curl 都沒有**,
-# 所以這裡一律走 apt (base 一定有 apt), 不依賴 curl / get.docker.com。見 handoff DEP-8/DEP-9。
-# 設計為 idempotent: 有就跳過, 不覆蓋 JetPack 既有的。跳過整段: SKIP_DOCKER_SETUP=1 ./build.sh
+# 使用者要求「完整流程 / 整個重裝 / 不要 fallback」: 一律照 Docker 官方流程走一遍 ——
+# 移除 Ubuntu 的 docker.io (不帶 buildx, 是 exit 125 的根因, 見 DEP-10), 改裝 docker-ce 全套。
+# 全程 set -e: 任一步真失敗就停, 不降級、不繞路。跳過整段: SKIP_DOCKER_SETUP=1 ./build.sh
 # ---------------------------------------------------------------------------
-APT_UPDATED=0
-apt_update_once() {  # 只 apt-get update 一次, 避免重複
-  [ "${APT_UPDATED}" = "1" ] && return
+setup_step0() {
+  echo "[build] 步驟 0: Docker(官方, 含 buildx) + NVIDIA runtime  (需 sudo)"
+
+  # 0a. 基本工具 (base 映像常缺 curl)
   sudo apt-get update
-  APT_UPDATED=1
-}
+  sudo apt-get install -y ca-certificates curl gnupg git
 
-ensure_base_tools() {
-  # base 映像常缺 curl (使用者已回報)。git 通常有; 兩者缺才補。
-  local miss=()
-  command -v curl >/dev/null 2>&1 || miss+=(curl)
-  command -v git  >/dev/null 2>&1 || miss+=(git)
-  if [ "${#miss[@]}" -gt 0 ]; then
-    echo "[build] 補基本工具 (base 映像缺): ${miss[*]}  (需 sudo)"
-    apt_update_once
-    sudo apt-get install -y "${miss[@]}"
-  fi
-}
+  # 0b. 移除 Ubuntu 的 docker.io 及舊套件 (不帶 buildx; 見 DEP-10)。
+  #     這行是「清掉舊版」, 非 fallback; 套件本來就沒裝也無妨, 故容忍非零。
+  sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc || true
 
-ensure_docker() {
-  if command -v docker >/dev/null 2>&1; then
-    echo "[build] Docker 已存在: $(docker --version)"
-    return
-  fi
-  echo "[build] 找不到 Docker。以 apt 安裝 docker.io (base 無 curl, 不用 get.docker.com)。"
-  echo "[build] ↳ 需要 sudo 密碼; 這步會改動系統。"
-  apt_update_once
-  sudo apt-get install -y docker.io
-  sudo systemctl enable --now docker || true
-  # sudo 底下 $USER 會是 root; 用 ${SUDO_USER:-$USER} 抓「真正的你」, 把你(而非root)加進 docker 群組。
+  # 0c. 加 Docker 官方 apt 源 (--yes 讓重跑時可覆寫金鑰, 支援「整個重裝」)
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+  sudo chmod a+r /etc/apt/keyrings/docker.gpg
+  CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-jammy}")"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo apt-get update
+
+  # 0d. 裝 docker-ce 全套 (engine + CLI + containerd + buildx + compose)
+  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  sudo systemctl enable --now docker
+
+  # 0e. 把「真正的你」加進 docker 群組 (sudo 下 $USER=root, 用 SUDO_USER 抓真使用者)
   TARGET_USER="${SUDO_USER:-$USER}"
-  sudo usermod -aG docker "${TARGET_USER}" || true
-  echo "[build] Docker 安裝完成: $(docker --version 2>/dev/null || echo '需重登入生效')"
-  echo "[build] 已把 ${TARGET_USER} 加進 docker 群組。若非 sudo 執行, 之後遇 permission denied 請 'newgrp docker' 或重登入。"
-}
+  sudo usermod -aG docker "${TARGET_USER}"
 
-ensure_nvidia_runtime() {
-  # 光有 docker 還不夠: run.sh 用 --runtime nvidia, 需要 NVIDIA container runtime。
-  if docker info 2>/dev/null | grep -qiE 'runtimes:.*nvidia|nvidia'; then
-    echo "[build] NVIDIA container runtime 已就緒。"
-    return
-  fi
-  # 決策更新 (T9): 已鎖定 JP6.2 + 本機是 JetPack 裝置(L4T apt repo 已預配),
-  # 此時正確套件明確就是 nvidia-container-toolkit, 不再有「裝到 x86 版」的歧義,
-  # 故從「只警告」改為「apt 嘗試安裝, 失敗才警告」。
-  echo "[build] 未偵測到 NVIDIA runtime。JP6.2 以 apt 安裝 nvidia-container-toolkit (L4T repo)。"
-  echo "[build] ↳ 需要 sudo 密碼。"
-  apt_update_once
-  if sudo apt-get install -y nvidia-container-toolkit; then
-    sudo nvidia-ctk runtime configure --runtime=docker || true
-    sudo systemctl restart docker || true
-    echo "[build] nvidia runtime 設定完成。"
-  else
-    echo "[build][WARN] apt 裝不到 nvidia-container-toolkit — L4T apt 來源可能沒配好。" >&2
-    echo "[build][WARN] 確認 /etc/apt/sources.list.d/ 有 nvidia L4T repo 後重跑; 見 handoff DEP-8。" >&2
-  fi
+  # 0f. NVIDIA container runtime + 設成 default-runtime (jetson-containers build 階段就要 GPU)
+  sudo apt-get install -y nvidia-container-toolkit
+  sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+  sudo systemctl restart docker
+
+  # 0g. 驗證 (任一失敗即 set -e 中止, 不繼續往下 build)
+  echo "[build] 驗證:"
+  docker --version
+  docker buildx version
+  echo "[build]   default-runtime = $(docker info --format '{{.DefaultRuntime}}')"
+  echo "[build] 步驟 0 完成。"
 }
 
 if [ "${SKIP_DOCKER_SETUP:-0}" != "1" ]; then
-  echo "[build] 步驟 0/1: 確認基本工具 + Docker + NVIDIA runtime"
-  ensure_base_tools
-  ensure_docker
-  ensure_nvidia_runtime
+  setup_step0
 fi
 
 # ---------------------------------------------------------------------------
