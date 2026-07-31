@@ -1,6 +1,6 @@
 # Handoff — Jetson DeepStream + PyTorch + Webcam 小應用
 
-> 目的：用 [dusty-nv/jetson-containers](https://github.com/dusty-nv/jetson-containers) 在 **JetPack 7.1** 上，跑一個
+> 目的：用 [dusty-nv/jetson-containers](https://github.com/dusty-nv/jetson-containers) 在 **JetPack 6.2**（L4T r36.4.3 · CUDA 12.6 · Ubuntu 22.04 · Python 3.10）上，跑一個
 > 「webcam → DeepStream (GStreamer) → PyTorch 分類 → 疊字輸出」的最小應用，
 > **主要用來驗證套件依賴（DeepStream / pyds / PyTorch / GStreamer / v4l2）在 JP7.1 上到底完不完整。**
 >
@@ -15,7 +15,7 @@
 - 先跑 `app/preflight.py`（依賴健檢），**它就是「依賴完不完整」的驗收工具**。
 - 再跑 `app/app.py`（真正的小應用）。
 - 兩者都設計成：**缺哪個依賴就明確告訴你缺哪個**，而不是丟一坨 traceback。
-- **最大風險**：JP7.1（L4T r38 / CUDA 13）對 DeepStream 8.0 的 jetson-containers 打包在寫作當下**尚未有明確對應條目**，可能需要手動處理。詳見 §3。
+- **平台決策（T8）**：目標已從 JP7.1 **改為 JP6.2**。JP6.2 = L4T r36.4.3，是 `deepstream/config.py` 明確對應 DS 8.0.0 的那一筆 → **原本的最大風險（DEP-1 樂觀誤配）直接解除**。詳見 §3、§4-T8。
 
 ---
 
@@ -31,7 +31,7 @@
 | 3 | `import pyds` | 成功（DeepStream Python bindings 有裝）|
 | 4 | GStreamer + nvidia 外掛 | `gst-inspect-1.0 nvinfer` / `nvvideoconvert` 存在 |
 | 5 | Webcam 節點 | `/dev/video0`（或指定節點）存在且可開 |
-| 6 | DeepStream 版本 | `deepstream-app --version` 可執行，版本 ≥ 7.1（JP7 應為 8.0）|
+| 6 | DeepStream 版本 | `deepstream-app --version` 可執行（JP6.2 → jetson-containers 選 DS 8.0.0 / pyds 1.2.2）|
 
 ### AC-2　端到端小應用（Demo 能動）
 | # | 檢查項 | 通過條件 |
@@ -93,10 +93,10 @@ v4l2src (webcam) → nvvideoconvert → capsfilter(RGBA) → appsink
 
 | ID | 依賴問題 | 狀態 | 說明與應對 |
 |----|----------|------|-----------|
-| DEP-1 | **DeepStream 8.0 對 JP7.1 (L4T r38) 的 jetson-containers 打包 —— 樂觀誤配風險** | 🔴 | **機制已查證**（見 `config.py`）：選版是一串 `>=` 由高到低的 if-elif，最上面是 `L4T_VERSION >= 36.4.3 → DS 8.0.0 / pyds 1.2.2 / tarball 'deepstream_sdk_v8.0.0_jetson.tbz2'`（此 tarball 為 **JP6.2 / CUDA 12.6 / Ubuntu 22.04** 建）。JP7.1 是 L4T **r38**，`38 >= 36.4.3` 成立 → **命中最上面那個 JP6.2 分支**，不是落到 `else: package=None`。也就是說 **沒有版本上限保護**：比最新已知還新的 L4T 會被「樂觀地」對到最新已知的 JP6.2 建置。危險點是 **它不會報「不支援」，而是靜默裝一個 CUDA 12.6 的 DeepStream 到 CUDA 13 環境**，錯誤延後到 `install.sh` / pyds 編譯 / `import pyds` / runtime 才炸（看起來像成功）。`else→None` 只在版本 **< r32.6**（比最舊還舊）時才觸發。**應對**：(a) 實機先 `git -C jetson-containers pull`——此表更新頻繁，官方隨時可能補 r38 條目；(b) `preflight.py` 專門抓這種假成功（`import pyds` / `deepstream-app --version`）；(c) 若確認誤配，走 §7 備援：改用 NVIDIA NGC 官方 DeepStream 8.0 JP7 容器當 base。 |
+| DEP-1 | **DeepStream 8.0 對目標平台的 jetson-containers 打包** | 🟢 **（改用 JP6.2 後解除）** | **原風險（JP7.1）**：選版是一串 `>=` 由高到低的 if-elif，最上面是 `L4T_VERSION >= 36.4.3 → DS 8.0.0 / pyds 1.2.2 / tarball 'deepstream_sdk_v8.0.0_jetson.tbz2'`。JP7.1 是 L4T **r38**，`38 >= 36.4.3` 成立 → 會**樂觀地**命中這筆「為 JP6.2 而寫」的建置，靜默誤配（見 §4-T6）。**現況（JP6.2）**：JP6.2 = L4T **r36.4.3**，正是這筆條目**原本就針對的版本** → 命中它是**精確且已驗證的相容組合**，不再是外推。風險消失。**唯一殘留提醒**：若日後又想上 JP7，本坑會重現，屆時走 §7 備援（NVIDIA NGC 官方 DS8.0 JP7 容器）。實機仍以 `preflight.py` 的 `import pyds` / `deepstream-app --version` 做最終確認。 |
 | DEP-2 | **pyds（DeepStream Python bindings）** | 🟡 | JP7 對應 pyds 版本較新（DS8.0 → pyds ≥1.2.x）。jetson-containers 的 deepstream 包會在版本 ≥1.2.0 時**從源碼編譯** gst-python + bindings（需 meson/cmake/pybind11）。編譯鏈缺任一都會失敗。preflight 會直接 `import pyds` 抓這個。 |
 | DEP-3 | **PyTorch on CUDA 13 / JP7** | 🟡 | jetson-containers 官方已宣稱支援 JetPack 7 (CUDA 13.x)。風險在 torchvision 版本需與 torch 對齊，否則 `import torchvision` 會因 C++ ABI 不合而炸。**應對**：app 對 torchvision 匯入做 try/except，失敗時降級為「不做分類、只驗證擷取路徑」。 |
-| DEP-4 | **Python 版本落差** | 🟡 | JP7.1 基底 Ubuntu 24.04 → Python 3.12；pyds wheel/編譯需對上 3.12。若某包只出 3.10 wheel 會裝不上。preflight 印出 `sys.version` 方便比對。 |
+| DEP-4 | **Python 版本落差** | 🟡→較低風險 | JP6.2 基底 Ubuntu 22.04 → **Python 3.10**（比 JP7.1 的 3.12 成熟、wheel 覆蓋更廣，這也是選 6.2 的附帶好處）。pyds/torch/torchvision 需與 3.10 對齊。preflight 印出 `sys.version` 方便比對。 |
 | DEP-5 | **GStreamer nv 外掛註冊** | 🟡 | 容器內 `nvvideoconvert`/`nvstreammux`/`nvinfer` 需在 `GST_PLUGIN_PATH` 註冊。DeepStream install.sh 會處理，但若 base image 換過可能漏。preflight 用 `gst-inspect-1.0` 逐一檢查。 |
 | DEP-6 | **webcam 裝置直通** | 🟡 | 容器要 `--device /dev/video0`。`jetson-containers run` 預設不一定帶。`run.sh` 已顯式加上 `--device` 與 X11 掛載。 |
 | DEP-7 | **顯示 / X11** | 🟡 | 無螢幕或 headless 時 `nveglglessink`/imshow 會爆。app 預設 **headless 友善**：無 DISPLAY 就只印文字，不開視窗。 |
@@ -118,6 +118,7 @@ v4l2src (webcam) → nvvideoconvert → capsfilter(RGBA) → appsink
 - **T4 韌性優先**：因無法實機除錯，決定所有依賴匯入都包 try/except 且**分層降級**，寧可少做功能也要能跑到「告訴你哪裡缺」。
 - **T5 開發機煙霧測試（2026-07-30）**：在 macOS 開發機（Python 3.12，無任何 Jetson 依賴）跑 `preflight.py`：**不崩、跑到底、印出記分板、exit 1**，正確標示 torch/pyds/deepstream/gst/webcam 全缺。證明「缺料變可讀報告」的設計成立。`app.py` 通過 `py_compile`。實機只是把這些 FAIL 逐一翻成 PASS 的過程。
 - **T7 Docker 前置的取捨（新增 build.sh 步驟 0）**：被問「要不要自己裝 container」。查證 —— **JetPack 預裝 Docker + nvidia runtime，jetson-containers `install.sh` 不裝 Docker**，所以標準情況不用。但仍加了 idempotent 安裝：**缺 Docker 才裝**。關鍵決策是 **nvidia runtime「只警告不強裝」**——因為 Jetson 的 runtime 來源與 x86 `nvidia-container-toolkit` 不同，腳本亂裝會弄壞 JetPack，寧可停下來讓人確認。體現原則：**破壞性 / 系統級操作要保守，能 idempotent 就 idempotent，沒把握就不要自動化。**
+- **T8 平台改用 JP6.2（重大決策，解除 DEP-1）**：使用者決定安裝 **JetPack 6.2 base**，目標平台從 JP7.1 下修。這不是退步而是**風險工程**：JP6.2 = L4T r36.4.3，正好是 `config.py` 明確支援 DS 8.0.0 的那一筆 → T6 發現的「樂觀誤配」風險**直接消失**，DEP-1 由 🔴 轉 🟢。附帶好處：Ubuntu 22.04 / Python 3.10 生態比 24.04 / 3.12 成熟，wheel 覆蓋更廣（DEP-4 降風險）。代價：不是最新的 CUDA 13 / Thor 特性——但本任務只為驗依賴，**穩定 > 最新** 是對的取捨。程式碼（preflight/app/run.sh）**完全不用改**：版本無關 + `autotag` 自動挑 image，這正是當初把應用邏輯與平台解耦的回報。只更新了 README/build.sh 的平台標示與本決策紀錄。
 - **T6 選版機制查證（修正 DEP-1 的認知）**：原本 DEP-1 寫「未見 r38 條目、可能沿用 JP6.2 URL」。實際讀 `config.py` 後**修正為更精確也更嚴重的結論**：不是「找不到→報錯」，而是 `>=` 級聯**沒有版本上限**，r38 會**靜默命中最頂端的 JP6.2 DS8.0.0 分支**，裝成「CUDA 12.6 的 DeepStream 落在 CUDA 13 環境」的假成功。決策從「擔心它抓不到」轉為「**擔心它抓到但抓錯，且看起來像對的**」——這反而強化了 `preflight.py`（用 `import pyds`/`deepstream-app --version` 驗真）的必要性。
 
 （實機那端若再有轉折，請接續往下記。）

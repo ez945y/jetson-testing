@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — 用 jetson-containers 組合出 DeepStream + PyTorch 容器。
-# 在真 Jetson (JetPack 7.1) 上執行。詳見 handoff.md §5 / DEP-1。
+# 目標: JetPack 6.2 (L4T r36.4.3 / CUDA 12.6 / Ubuntu 22.04)。詳見 handoff.md §5 / DEP-1。
 set -euo pipefail
 
 CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"

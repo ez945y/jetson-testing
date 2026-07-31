@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# 本機環境覆寫（見 README 環境變數）
+.env
+
+# jetson-containers 會被 clone 進來，不進本專案版控
+/jetson-containers/
+
+# 下載的模型權重
+/models/*
+!/models/.gitkeep
