@@ -34,9 +34,11 @@ newgrp docker
 
 > **不要用 `sudo` 跑 `build.sh` / `run.sh`**：`jetson-containers`/`docker` 用 sudo 會把 repo 弄成 root 擁有、之後非 sudo 執行全卡權限（見 handoff T11）。裝完 docker 用 `newgrp docker` 讓群組生效即可。
 >
-> **基底切換**：預設用 `dustynv/deepstream:r36.2.0`（已實測、免登入）。要用最新、與 host CUDA 12.6 原生對齊的 NVIDIA 官方 DeepStream 7.1（需先 `docker login nvcr.io`）：
+> **融合方式**：`build.sh` 用薄 Dockerfile `FROM <現成 deepstream>` + `pip install torch torchvision`（預建 wheel）。**不用** `jetson-containers build --base`——實測它會重建 CUDA、`exit 100`、耗 54 分（見 handoff DEP-11/T12）。
+>
+> **基底切換**：預設 `dustynv/deepstream:r36.2.0`（已實測、免登入、內建 jetson pip 索引）。要用最新、與 host cu126 對齊的 NVIDIA 官方 DeepStream 7.1（需先 `docker login nvcr.io`，且要自帶 wheel 索引）：
 > ```bash
-> DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch CUDA_VERSION=12.6 ./build.sh
+> DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch TORCH_INDEX=https://pypi.jetson-ai-lab.dev/jp6/cu126 ./build.sh
 > ```
 
 ---

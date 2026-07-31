@@ -4,6 +4,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------------------------------------------------------------------------
 # 步驟 0: 安裝正規 Docker (官方源, 含 buildx) + NVIDIA container runtime
@@ -58,33 +59,27 @@ if [ "${SKIP_DOCKER_SETUP:-0}" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 步驟 1: 用 jetson-containers「融合」—— 拿現成 deepstream 當 --base, 只疊 pytorch
+# 步驟 1: 薄層融合 —— FROM 現成 deepstream image, pip 疊上預建 torch/torchvision wheel
 #
-# 為何用 --base (見 handoff DEP-11 / T11):
-#   你的 L4T r36.5 (JP6.2.1) 沒有預建 deepstream。直接
-#   `jetson-containers build deepstream pytorch` 會從 ubuntu:22.04 把整條 19 層「全從源碼編」(數小時)。
-#   改成把「已預建、實測可跑」的 deepstream image 當地基, jetson-containers 只需疊 pytorch 那一層
-#   (裝預建 wheel, 幾分鐘)。這才是 jetson-containers 該有的「快速融合」用法。
+# 為何「不」用 `jetson-containers build --base` (實測結論, 見 handoff DEP-11 / T12):
+#   --base 只省掉 deepstream 的子樹 (19->10 stages), 但 pytorch 仍會把「自己的」依賴(含 CUDA)
+#   在基底上「從源碼重建」—— 即使基底早就有 CUDA。實測在 cuda 階段 `exit 100` 失敗、白耗 54 分。
+#   正解: 直接 FROM 現成 deepstream(已含 CUDA/python/pyds/gstreamer), 只 `pip install` torch 預建 wheel。
+#   若 pip 找不到合適 wheel, 這步會「秒級」失敗(不是 54 分), 再用 TORCH_INDEX 覆寫索引即可。
 #
-# 基底二選一 (用環境變數切換):
-#   預設 = dustynv/deepstream:r36.2.0  (DeepStream 6.4.0 / CUDA 12.2; 已實測 pyds+gstreamer 全過, 免 NGC 登入)
-#   最新 = NVIDIA 官方, 與 host cu126 原生對齊 (需先 `docker login nvcr.io`, NGC 免費帳號):
-#       DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch CUDA_VERSION=12.6 ./build.sh
+# 基底切換 (環境變數):
+#   預設 = dustynv/deepstream:r36.2.0  (已實測 pyds/gstreamer 全過; 容器內建 jetson pip 索引, 免 NGC 登入)
+#   最新 = nvcr.io/nvidia/deepstream:7.1-triton-multiarch (cu126, 需 `docker login nvcr.io`);
+#          該基底非 dusty-nv 出品, 要自帶 wheel 索引:
+#            DEEPSTREAM_BASE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch \
+#            TORCH_INDEX=https://pypi.jetson-ai-lab.dev/jp6/cu126 ./build.sh
 # ---------------------------------------------------------------------------
 DEEPSTREAM_BASE="${DEEPSTREAM_BASE:-dustynv/deepstream:r36.2.0}"
-CUDA_VERSION="${CUDA_VERSION:-12.2}"   # 必須對齊基底容器的 CUDA (r36.2.0=12.2); 用 NVIDIA 基底請設 12.6
 
-if ! command -v jetson-containers >/dev/null 2>&1; then
-  echo "[build] 找不到 jetson-containers。請先安裝:" >&2
-  echo "        git clone https://github.com/dusty-nv/jetson-containers" >&2
-  echo "        bash jetson-containers/install.sh" >&2
-  exit 1
-fi
-
-echo "[build] 融合: pytorch + torchvision 疊到 ${DEEPSTREAM_BASE} (CUDA ${CUDA_VERSION}) -> ${CONTAINER_NAME}"
-CUDA_VERSION="${CUDA_VERSION}" jetson-containers build \
-  --base="${DEEPSTREAM_BASE}" \
-  --name="${CONTAINER_NAME}" \
-  pytorch torchvision
+echo "[build] 融合: FROM ${DEEPSTREAM_BASE} + pip torch/torchvision -> ${CONTAINER_NAME}"
+docker build -t "${CONTAINER_NAME}" \
+  --build-arg "DEEPSTREAM_BASE=${DEEPSTREAM_BASE}" \
+  ${TORCH_INDEX:+--build-arg "TORCH_INDEX=${TORCH_INDEX}"} \
+  -f "${HERE}/Dockerfile" "${HERE}"
 
 echo "[build] 完成。用 ./run.sh preflight 驗依賴。"
