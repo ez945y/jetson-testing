@@ -14,9 +14,11 @@ CONTAINER_NAME="${CONTAINER_NAME:-ds-torch-webcam}"
 VIDEO_DEVICE="${VIDEO_DEVICE:-/dev/video0}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# build.sh --name 產出的實際 tag 形如 ds-torch-webcam:r36.5.x-...; 抓第一個符合的。
 IMAGE="$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep "^${CONTAINER_NAME}:" | head -1 || true)"
-[ -z "${IMAGE}" ] && IMAGE="${CONTAINER_NAME}"
+if [ -z "${IMAGE}" ]; then
+  echo "[run] 本機沒有 ${CONTAINER_NAME} image — 請先跑 ./build.sh (build 成功才會有)。" >&2
+  exit 1
+fi
 
 RUN_ARGS=(
   --runtime nvidia

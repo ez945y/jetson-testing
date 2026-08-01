@@ -23,8 +23,16 @@ RUN if [ -n "${TORCH_INDEX}" ]; then \
 
 # 層2: 補 wheel 連結的系統庫 + numpy(app 要用) + 驗證匯入。
 # 與層1分開: 之後再發現缺 .so 只重跑這層, 不用重下載幾百MB的 torch (見 handoff DEP-13)。
-# libopenblas0: jetson torch wheel 連結 libopenblas.so.0, dustynv 容器有預裝, NVIDIA 官方 DS 容器沒有。
-RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0 \
- && rm -rf /var/lib/apt/lists/* \
+# 官方 DS 容器只保證 DeepStream 自身依賴, torch wheel 連結的這些都缺 (dustynv 容器則有預裝):
+#   - libopenblas0            (apt, Ubuntu 源)
+#   - libcudss.so.0 (cuDSS)   (apt 套件 `cudss`, 來自 NVIDIA CUDA 網路源 — 與 jetson-containers
+#   - libcusparseLt (cuSPARSELt) (apt 套件 `libcusparselt0`)  install_cudss/cusparselt.sh 同款做法)
+RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0 wget ca-certificates \
+ && wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb \
+ && dpkg -i /tmp/cuda-keyring.deb \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends cudss libcusparselt0 \
+ && dpkg --purge cuda-keyring && rm -f /tmp/cuda-keyring.deb && rm -rf /var/lib/apt/lists/* \
+ && ldconfig \
  && pip3 install --no-cache-dir numpy \
  && python3 -c "import torch, torchvision, numpy; print('OK torch', torch.__version__, 'torchvision', torchvision.__version__, 'cuda_built', torch.backends.cuda.is_built())"
