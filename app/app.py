@@ -108,33 +108,51 @@ class Classifier:
 # --------------------------------------------------------------------------
 # Pipeline 組裝
 # --------------------------------------------------------------------------
+def pick_display_sink():
+    """有 DISPLAY 時挑一個可用的視窗 sink; headless 回 None。"""
+    if not os.environ.get("DISPLAY"):
+        return None
+    for cand in ("nv3dsink", "nveglglessink", "xvimagesink", "ximagesink", "autovideosink"):
+        if has_element(cand):
+            return cand
+    return None
+
+
 def build_pipeline():
     """
-    v4l2src -> (nvvideoconvert|videoconvert) -> capsfilter(RGBA/RGB) -> appsink
+    分析路 (必有):  v4l2src -> (nvvideoconvert|videoconvert) -> RGB -> appsink -> PyTorch
+    顯示路 (有 DISPLAY 才加): tee 出來 -> textoverlay(疊分類結果) -> 視窗 sink
 
-    優先用 DeepStream 的 nvvideoconvert (GPU); 沒有就退回 CPU videoconvert。
     回傳 (pipeline, appsink, path_desc)。
     """
     use_nv = has_element("nvvideoconvert")
-    conv = "nvvideoconvert" if use_nv else "videoconvert"
-    # nvvideoconvert 輸出走 NVMM->system memory 需再一次 videoconvert 轉 RGB
+    disp = pick_display_sink()
+    hud = has_element("textoverlay")
+
+    src = (f"v4l2src device={VIDEO_DEVICE} ! "
+           f"video/x-raw,width={WIDTH},height={HEIGHT}")
     if use_nv:
-        chain = (
-            f"v4l2src device={VIDEO_DEVICE} ! "
-            f"video/x-raw,width={WIDTH},height={HEIGHT} ! "
-            f"nvvideoconvert ! video/x-raw,format=RGBA ! "
-            f"videoconvert ! video/x-raw,format=RGB ! "
-            f"appsink name=sink emit-signals=true max-buffers=1 drop=true"
-        )
+        analysis = ("nvvideoconvert ! video/x-raw,format=RGBA ! "
+                    "videoconvert ! video/x-raw,format=RGB ! "
+                    "appsink name=sink emit-signals=true max-buffers=1 drop=true")
     else:
-        chain = (
-            f"v4l2src device={VIDEO_DEVICE} ! "
-            f"video/x-raw,width={WIDTH},height={HEIGHT} ! "
-            f"videoconvert ! video/x-raw,format=RGB ! "
-            f"appsink name=sink emit-signals=true max-buffers=1 drop=true"
-        )
-    path_desc = f"{'nvvideoconvert (GPU/DeepStream)' if use_nv else 'videoconvert (CPU fallback)'}"
-    print(f"[pipeline] source={VIDEO_DEVICE} conv={conv}")
+        analysis = ("videoconvert ! video/x-raw,format=RGB ! "
+                    "appsink name=sink emit-signals=true max-buffers=1 drop=true")
+
+    if disp:
+        overlay = ("textoverlay name=hud text=warming-up "
+                   "font-desc=Sans,20 valignment=top halignment=left ! " if hud else "")
+        # queue leaky: 顯示路卡住不准拖累分析路 (反之亦然)
+        chain = (f"{src} ! tee name=t "
+                 f"t. ! queue leaky=downstream ! {analysis} "
+                 f"t. ! queue leaky=downstream ! videoconvert ! {overlay}"
+                 f"videoconvert ! {disp} sync=false")
+    else:
+        chain = f"{src} ! {analysis}"
+
+    path_desc = (f"{'nvvideoconvert (GPU/DeepStream)' if use_nv else 'videoconvert (CPU fallback)'}"
+                 f" + display={disp or 'headless'}")
+    print(f"[pipeline] source={VIDEO_DEVICE} display={disp or '(headless, 只印文字)'}")
     print(f"[pipeline] gst-launch equiv:\n  {chain}")
     pipeline = Gst.parse_launch(chain)
     appsink = pipeline.get_by_name("sink")
@@ -146,6 +164,7 @@ class App:
         Gst.init(None)
         self.clf = Classifier()
         self.pipeline, self.appsink, self.path_desc = build_pipeline()
+        self.hud = self.pipeline.get_by_name("hud")  # 顯示路的字幕; headless 時為 None
         self.appsink.connect("new-sample", self.on_sample)
         self.loop = GLib.MainLoop()
         self.frame_count = 0
@@ -193,6 +212,8 @@ class App:
                 label, p = res
                 self.last_label = f"{label} (p={p:.2f})"
                 print(f"[frame {self.frame_count:5d}] {self.last_label}")
+                if self.hud:
+                    self.hud.set_property("text", self.last_label)
         elif not self.clf.ready and self.frame_count % INFER_EVERY == 0:
             print(f"[frame {self.frame_count:5d}] captured {w}x{h} "
                   f"(分類停用, 僅驗證擷取)")
