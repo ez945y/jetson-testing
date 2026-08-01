@@ -14,9 +14,17 @@ FROM ${DEEPSTREAM_BASE}
 # (對齊 DS7.1 的 CUDA 12.6)。若改用 dustynv 基底(內建索引), 可傳空字串。
 # 注意: 舊域名 pypi.jetson-ai-lab.dev 已 NXDOMAIN (2026-08 實測), 現行為 .io (見 handoff DEP-12)。
 ARG TORCH_INDEX="https://pypi.jetson-ai-lab.io/jp6/cu126"
+# 層1: 只下載安裝 wheel (最花時間的一層, 讓它穩定可 cache)
 RUN if [ -n "${TORCH_INDEX}" ]; then \
       pip3 install --no-cache-dir --index-url "${TORCH_INDEX}" torch torchvision ; \
     else \
       pip3 install --no-cache-dir torch torchvision ; \
-    fi \
- && python3 -c "import torch, torchvision; print('OK torch', torch.__version__, 'torchvision', torchvision.__version__)"
+    fi
+
+# 層2: 補 wheel 連結的系統庫 + numpy(app 要用) + 驗證匯入。
+# 與層1分開: 之後再發現缺 .so 只重跑這層, 不用重下載幾百MB的 torch (見 handoff DEP-13)。
+# libopenblas0: jetson torch wheel 連結 libopenblas.so.0, dustynv 容器有預裝, NVIDIA 官方 DS 容器沒有。
+RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0 \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip3 install --no-cache-dir numpy \
+ && python3 -c "import torch, torchvision, numpy; print('OK torch', torch.__version__, 'torchvision', torchvision.__version__, 'cuda_built', torch.backends.cuda.is_built())"
