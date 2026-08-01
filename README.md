@@ -1,12 +1,13 @@
 # Jetson DeepStream + PyTorch + Webcam（最小應用）
 
-在 **JetPack 6.2** 上，用 [dusty-nv/jetson-containers](https://github.com/dusty-nv/jetson-containers) 跑一個
-`webcam → DeepStream/GStreamer → PyTorch 分類 → 輸出` 的最小 demo。
+在 **JetPack 6.2** 上跑一個 `webcam → DeepStream/GStreamer → PyTorch 分類 → 輸出` 的最小 demo。
 
 **真正目的是測「套件依賴完不完整」**，不是做產品級 CV。完整決策過程與依賴問題追蹤在 [`handoff.md`](handoff.md)。
 
-- 目標平台：**JetPack 6.2**（L4T r36.4.3 · CUDA 12.6 · Ubuntu 22.04 · Python 3.10）
-- jetson-containers 對 JP6.2 選用：**DeepStream 8.0.0 / pyds 1.2.2**（`config.py` 的精確對應，非外推）
+- 目標平台：**JetPack 6.2.x**（實機 L4T r36.5 · CUDA 12.6 · Ubuntu 22.04 · Python 3.10）
+- 實際堆疊：**官方 DeepStream 7.1 容器** + **torch 2.11 / torchvision 0.26**（jetson-ai-lab cu126 預建 wheel）+ **pyds 1.2.0**（官方 wheel）
+- 補的系統庫（官方 DS 容器缺）：`libopenblas0`、`cudss`、`libcusparselt0`、`python3-gi`（詳見 handoff DEP-13/14）
+- （最初嘗試 `jetson-containers build` 全從源碼編譯的路線已棄用，原因見 handoff DEP-11/T12）
 
 ---
 

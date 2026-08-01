@@ -44,4 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-gi pyth
  && rm -rf /var/lib/apt/lists/* \
  && pip3 install --no-cache-dir \
       https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl \
- && python3 -c "import pyds, gi; print('OK pyds', getattr(pyds, '__version__', '(no ver attr)'))"
+ && python3 -c "import gi; print('OK gi + pyds installed')"
+# 注意: build 階段「不能」import pyds —— 它連結的 libnvbufsurface 等 L4T 庫是 nvidia runtime
+# 在 `docker run` 時才從 host 掛進來的, build 時不存在。pyds 的匯入驗證交給 runtime 的 preflight。
