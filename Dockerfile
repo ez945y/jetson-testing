@@ -36,3 +36,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends libopenblas0 wg
  && ldconfig \
  && pip3 install --no-cache-dir numpy \
  && python3 -c "import torch, torchvision, numpy; print('OK torch', torch.__version__, 'torchvision', torchvision.__version__, 'cuda_built', torch.backends.cuda.is_built())"
+
+# 層3: pyds (DeepStream Python bindings) + python3-gi (app 的 GStreamer python 介面)。
+# 官方 DS7.1 容器「不」內建 pyds (實測 preflight FAIL); 官方 wheel 在 deepstream_python_apps releases,
+# v1.2.0 = DS 7.1 對應版, cp310 = 容器 Python 3.10。
+RUN apt-get update && apt-get install -y --no-install-recommends python3-gi python3-gst-1.0 \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip3 install --no-cache-dir \
+      https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl \
+ && python3 -c "import pyds, gi; print('OK pyds', getattr(pyds, '__version__', '(no ver attr)'))"
