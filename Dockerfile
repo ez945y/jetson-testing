@@ -60,3 +60,10 @@ RUN python3 -c "import torchvision; \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libflac8 libmpg123-0 libmp3lame0 libmjpegutils-2.1-0 libavcodec58 \
  && rm -rf /var/lib/apt/lists/*
+
+# 層6: HUD 字幕 (textoverlay=pango 外掛) + 字型 + X11 視窗 sink 備援。
+# 官方 DS 容器缺 pango gst 外掛/字型 -> 畫面疊不出字 (terminal 有、視窗沒有)。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gstreamer1.0-plugins-base gstreamer1.0-x fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/* \
+ && gst-inspect-1.0 textoverlay >/dev/null && echo "OK textoverlay"

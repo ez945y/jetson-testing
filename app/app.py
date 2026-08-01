@@ -152,7 +152,8 @@ def build_pipeline():
 
     path_desc = (f"{'nvvideoconvert (GPU/DeepStream)' if use_nv else 'videoconvert (CPU fallback)'}"
                  f" + display={disp or 'headless'}")
-    print(f"[pipeline] source={VIDEO_DEVICE} display={disp or '(headless, 只印文字)'}")
+    print(f"[pipeline] source={VIDEO_DEVICE} display={disp or '(headless, 只印文字)'} "
+          f"hud={'textoverlay' if (disp and hud) else '無 (缺 textoverlay/pango 外掛, 見 Dockerfile 層6)'}")
     print(f"[pipeline] gst-launch equiv:\n  {chain}")
     pipeline = Gst.parse_launch(chain)
     appsink = pipeline.get_by_name("sink")
@@ -226,13 +227,16 @@ class App:
 
         if RUN_SECONDS and (time.time() - self.t0) >= RUN_SECONDS:
             print(f"[app] 已跑 {RUN_SECONDS}s, 收工。")
-            self.stop()
+            # 死鎖陷阱: 這裡是 GStreamer 串流執行緒, 不能直接動 pipeline 狀態,
+            # 只能排程回主執行緒 (GLib.idle_add), 否則 set_state(NULL) 會卡死。
+            GLib.idle_add(self.stop)
         return Gst.FlowReturn.OK
 
     def stop(self):
-        self.pipeline.set_state(Gst.State.NULL)
+        # 只負責結束主迴圈; 真正的 set_state(NULL) 在 run() 的 finally (主執行緒, loop 已停)。
         if self.loop.is_running():
             self.loop.quit()
+        return False  # 讓 GLib.idle_add 不重複執行
 
     def run(self):
         print(f"[app] 啟動: 影像路徑 = {self.path_desc}")
@@ -244,7 +248,8 @@ class App:
         except KeyboardInterrupt:
             print("\n[app] 收到中斷。")
         finally:
-            self.stop()
+            # loop 已停, 主執行緒安全拆 pipeline
+            self.pipeline.set_state(Gst.State.NULL)
             elapsed = time.time() - self.t0
             fps = self.frame_count / max(elapsed, 1e-6)
             print(f"[app] 結束。共 {self.frame_count} 幀, {elapsed:.1f}s, 平均 {fps:.1f} FPS。")
