@@ -39,7 +39,14 @@ fi
 
 # X11 (有 DISPLAY 才加; headless 時 app 會自動只印文字)
 if [ -n "${DISPLAY:-}" ]; then
+  # 授權本機連線進 X server (消掉容器內 'Authorization required' / EGL 噪音)。
+  # 註: +local: 開放所有本機程序連 X, 開發機可接受; 嚴格環境請改用 xauth cookie。
+  command -v xhost >/dev/null 2>&1 && xhost +local: >/dev/null 2>&1 || true
   RUN_ARGS+=(-e "DISPLAY=${DISPLAY}" -v /tmp/.X11-unix:/tmp/.X11-unix)
+  # 有 xauth cookie 檔就一併帶進去 (SSH X forwarding 等情境)
+  if [ -n "${XAUTHORITY:-}" ] && [ -f "${XAUTHORITY}" ]; then
+    RUN_ARGS+=(-e "XAUTHORITY=${XAUTHORITY}" -v "${XAUTHORITY}:${XAUTHORITY}:ro")
+  fi
 fi
 
 case "${MODE}" in

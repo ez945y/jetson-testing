@@ -54,3 +54,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-gi pyth
 RUN python3 -c "import torchvision; \
     torchvision.models.mobilenet_v3_small(weights=torchvision.models.MobileNet_V3_Small_Weights.IMAGENET1K_V1); \
     print('OK weights baked')"
+
+# 層5: 補 gst 音訊外掛缺的庫, 消掉啟動時那排 'Failed to load plugin' 警告 (純觀感, 影像路徑用不到)。
+# librivermax (NVIDIA Rivermax, deepstream udp 外掛用) 非 apt 可裝、也用不到, 該條警告保留。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libflac8 libmpg123-0 libmp3lame0 libmjpegutils-2.1-0 libavcodec58 \
+ && rm -rf /var/lib/apt/lists/*

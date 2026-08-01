@@ -12,6 +12,8 @@
 
 ## 0. 一句話結論（給趕時間的人）
 
+> **✅ 最終狀態（2026-08-01）：端到端跑通。** `webcam → v4l2src → nvvideoconvert(DeepStream GPU) → appsink → PyTorch CUDA(MobileNetV3)` 實機 **18.8 FPS** 穩定輸出分類結果，preflight 13/13。AC-1、AC-2 全數達成。最終堆疊：官方 DS7.1 容器 + torch 2.11(jetson wheel) + pyds 1.2.0 + 補 6 個系統庫。完整曲折見 §4。
+
 - 先跑 `app/preflight.py`（依賴健檢），**它就是「依賴完不完整」的驗收工具**。
 - 再跑 `app/app.py`（真正的小應用）。
 - 兩者都設計成：**缺哪個依賴就明確告訴你缺哪個**，而不是丟一坨 traceback。
@@ -125,6 +127,7 @@ v4l2src (webcam) → nvvideoconvert → capsfilter(RGBA) → appsink
 - **T4 韌性優先**：因無法實機除錯，決定所有依賴匯入都包 try/except 且**分層降級**，寧可少做功能也要能跑到「告訴你哪裡缺」。
 - **T5 開發機煙霧測試（2026-07-30）**：在 macOS 開發機（Python 3.12，無任何 Jetson 依賴）跑 `preflight.py`：**不崩、跑到底、印出記分板、exit 1**，正確標示 torch/pyds/deepstream/gst/webcam 全缺。證明「缺料變可讀報告」的設計成立。`app.py` 通過 `py_compile`。實機只是把這些 FAIL 逐一翻成 PASS 的過程。
 - **T7 Docker 前置的取捨（新增 build.sh 步驟 0）**：被問「要不要自己裝 container」。查證 —— **JetPack 預裝 Docker + nvidia runtime，jetson-containers `install.sh` 不裝 Docker**，所以標準情況不用。但仍加了 idempotent 安裝：**缺 Docker 才裝**。關鍵決策是 **nvidia runtime「只警告不強裝」**——因為 Jetson 的 runtime 來源與 x86 `nvidia-container-toolkit` 不同，腳本亂裝會弄壞 JetPack，寧可停下來讓人確認。體現原則：**破壞性 / 系統級操作要保守，能 idempotent 就 idempotent，沒把握就不要自動化。**
+- **T15 端到端跑通（2026-08-01，任務達成）**：`./run.sh app` 實機輸出 `[classifier] ready on cuda` + 每 15 幀分類 + **18.8 FPS**（`path=nvvideoconvert (GPU/DeepStream)`），60 秒穩定。過程中最後兩個修正：(a) 權重烤進 image 前使用者跑的是舊 image（憑時間戳識別出是同一份 log）——**看 log 先對時間戳**；(b) 权重 runtime 下載卡 `getaddrinfo` 證實 `--network host` 容器內 DNS 有怪癖，烤權重繞開（DEP-15）。收尾清理：run.sh 加 `xhost +local:` + XAUTHORITY 掛載（消 X11/EGL 噪音）、Dockerfile 層5補音訊庫（消 gst 警告；librivermax 為 Rivermax SDK 專屬、裝不到也用不到，保留該條警告）。
 - **T14 基底切到 NVIDIA 官方 DS 7.1（推翻 T13 的 r36.2.0 預設）**：使用者兩點質疑都成立——(1)「r36.2.0 不是 for 我的 36.5」：對，那是 JP6.0 DP 的產物，靠向前相容硬撐；(2)「看官方有沒有 release」：查證確認 **DeepStream 7.1 就是官方對 JP6.2 / L4T 36.4–36.5 的正式 release**，容器 `nvcr.io/nvidia/deepstream:7.1-triton-multiarch`（cu126，與 host 原生對齊）。另確認**沒有任何現成單一 image 同時含 DeepStream+PyTorch**（官方兩者分開出），所以「自己合一顆」不可避免——但維持零編譯：`FROM` 官方 DS7.1 + pip 裝 jetson-ai-lab **jp6/cu126 預建 torch wheel**（索引已設為 Dockerfile 預設）。同時把 host 設定拆成一次性 `setup-host.sh`，`build.sh` 只管做 image；**jetson-containers 工具本身已完全不需要安裝**（純 docker build/run）。代價：拉官方 image 需 `docker login nvcr.io`（NGC 免費帳號）。r36.2.0 降為免登入備援（`DEEPSTREAM_BASE=... TORCH_INDEX= ./build.sh`）。待實機驗證點：官方 DS7.1 容器內 **pyds 是否內建**（論壇稱含 pyds 1.2.0）——preflight 第一項就會揭曉，若缺再於 Dockerfile 補裝 pyds wheel。
 - **T12 推翻 T11：`jetson-containers build --base` 不可行 → 改薄 Dockerfile + pip（真正定稿）**：實機跑 `--base` 融合,結果 **10 stages、在 `packages/cuda/cuda` 階段 `exit 100` 失敗、耗 54 分**。學到 `--base` 的真實語意:它只把 deepstream 的子樹省掉(19→10),但 **pytorch 仍會把「自己的」依賴(含 CUDA)在基底上從源碼重建**,即使基底已有 CUDA——jetson-containers **不會 introspect 基底內容**。所以「用 jetson-containers 融合」在這裡達不到「快速」。**最終定稿**:薄 Dockerfile `FROM <現成 deepstream> ` + `pip install torch torchvision`(預建 wheel),`build.sh` 改用 `docker build`。這正是使用者兩輪前質疑為「土」、但**實測證明才是對的**做法——現成 deepstream 已含 CUDA,pip 只補 torch,零重建。關鍵優點:若 pip 找不到 wheel,**秒級失敗**,不再賭 54 分。教訓:**別再假設工具的 flag 語意,實測為準;我這次也確實連錯兩版(T11 的 --base 是誤判)。**
 - **T13 使用者拍板：CUDA 12.2 / r36.2.0**：確認要求「CUDA 也要用 jetson-containers 提供的」——澄清後確認**現行做法已滿足**（基底 `dustynv/deepstream:r36.2.0` 的 CUDA 就是 jetson-containers 打包的，pip torch wheel 也對著它編）。使用者在「12.2 全 jetson-containers 快速可用」vs「12.6 最新但要數小時源碼 build」間選 **12.2**。定案不變，程式碼不動。（cu126 需求若日後出現，走源碼 build，先查磁碟空間——`exit 100` 疑為空間不足。）
