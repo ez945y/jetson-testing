@@ -47,3 +47,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-gi pyth
  && python3 -c "import gi; print('OK gi + pyds installed')"
 # 注意: build 階段「不能」import pyds —— 它連結的 libnvbufsurface 等 L4T 庫是 nvidia runtime
 # 在 `docker run` 時才從 host 掛進來的, build 時不存在。pyds 的匯入驗證交給 runtime 的 preflight。
+
+# 層4: 把 MobileNetV3 權重「烤進 image」(build 時下載一次)。
+# 否則 app 每次啟動都要去 download.pytorch.org 抓 (~10MB), 容器 --rm 不留 cache,
+# 且實測 runtime 下載會卡 DNS (見 handoff DEP-15)。烤進去後 runtime 零網路依賴。
+RUN python3 -c "import torchvision; \
+    torchvision.models.mobilenet_v3_small(weights=torchvision.models.MobileNet_V3_Small_Weights.IMAGENET1K_V1); \
+    print('OK weights baked')"
